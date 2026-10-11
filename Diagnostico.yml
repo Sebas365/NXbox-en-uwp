@@ -1,0 +1,31 @@
+name: Diagnóstico NXBOX
+
+on: workflow_dispatch
+
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Listar archivos clave
+        shell: pwsh
+        run: |
+          Write-Host "=== Package.appxmanifest ==="
+          Get-ChildItem -Recurse -Filter Package.appxmanifest | ForEach-Object { $_.FullName }
+
+          Write-Host "=== CMakeLists.txt ==="
+          Get-ChildItem -Recurse -Filter CMakeLists.txt | ForEach-Object { $_.FullName }
+
+          Write-Host "=== .sln ==="
+          Get-ChildItem -Recurse -Filter *.sln | ForEach-Object { $_.FullName }
+
+          Write-Host "=== .vcxproj ==="
+          Get-ChildItem -Recurse -Filter *.vcxproj | ForEach-Object { $_.FullName }
+
+          Write-Host "=== Contenido de CMakeLists.txt (primeras 150 líneas) ==="
+          $cmake = Get-ChildItem -Recurse -Filter CMakeLists.txt | Select-Object -First 1
+          if ($cmake) { Get-Content $cmake.FullName -TotalCount 150 }
+          else { Write-Host "No se encontró CMakeLists.txt" }
