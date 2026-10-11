@@ -1,0 +1,97 @@
+name: Build NXBOX UWP for Xbox Series
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    # Se usa un runner de Windows para compilar con MSBuild
+    runs-on: windows-latest
+
+    steps:
+      # 1. Descargar el código fuente
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 2. Configurar las herramientas de compilación
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      # 3. Localizar el archivo de solución (.sln)
+      - name: Find solution
+        id: find
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
+          if (-not $sln) { throw "No se encontró ningún archivo .sln" }
+          Write-Host "Solución encontrada: $($sln.FullName)"
+          "sln=$($sln.FullName)" >> $env:GITHUB_OUTPUT
+
+      # 4. Restaurar dependencias de NuGet
+      - name: Restore NuGet packages
+        shell: pwsh
+        run: nuget restore "${{ steps.find.outputs.sln }}"
+
+      # 5. Crear un certificado de prueba autofirmado.
+      #    Es necesario para firmar el paquete y que la Xbox lo acepte en Modo Desarrollador.
+      - name: Create test certificate
+        id: cert
+        shell: pwsh
+        run: |
+          $manifest = Get-ChildItem -Recurse -Filter Package.appxmanifest | Select-Object -First 1
+          if (-not $manifest) { throw "No se encontró el archivo Package.appxmanifest" }
+
+          [xml]$xml = Get-Content $manifest.FullName
+          $publisher = $xml.Package.Identity.Publisher
+          Write-Host "Publisher del manifiesto: $publisher"
+
+          # Crear el certificado
+          $cert = New-SelfSignedCertificate `
+            -Type Custom `
+            -Subject $publisher `
+            -KeyUsage DigitalSignature `
+            -FriendlyName "NXBOX Build Cert" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
+
+          # Exportar el certificado a archivos .pfx (para firmar) y .cer (para instalar en la Xbox)
+          $pwd = ConvertTo-SecureString -String "P@ssw0rd!" -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath "$env:GITHUB_WORKSPACE\buildcert.pfx" -Password $pwd
+          Export-Certificate -Cert $cert -FilePath "$env:GITHUB_WORKSPACE\buildcert.cer"
+
+      # 6. Compilar y empaquetar la aplicación UWP para Xbox.
+      #    Se especifica la plataforma x64 y el modo 'SideloadOnly', que es el adecuado para Dev Mode.
+      - name: Build UWP for Xbox
+        shell: pwsh
+        run: |
+          msbuild "${{ steps.find.outputs.sln }}" `
+            /m `
+            /restore `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:AppxBundle=Always `
+            /p:UapAppxPackageBuildMode=SideloadOnly `
+            /p:PackageCertificateKeyFile="$env:GITHUB_WORKSPACE\buildcert.pfx" `
+            /p:PackageCertificatePassword="P@ssw0rd!" `
+            /p:AppxPackageSigningEnabled=true
+
+      # 7. Subir los archivos generados como artefactos para que los descargues.
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxbox-uwp-package
+          path: |
+            **/AppPackages/**
+            **/*.msix
+            **/*.appx
+            **/*.msixbundle
+            **/*.appxbundle
+            buildcert.cer
+          if-no-files-found: warn
